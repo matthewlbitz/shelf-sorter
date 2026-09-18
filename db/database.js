@@ -46,6 +46,12 @@ function openDatabase(filename = defaultPath) {
       album_id INTEGER NOT NULL REFERENCES albums(id), column_position INTEGER,
       PRIMARY KEY(session_id,position), UNIQUE(session_id,album_id)
     );
+    CREATE TABLE IF NOT EXISTS session_actions (
+      session_id INTEGER NOT NULL REFERENCES sessions(id),
+      start_cursor INTEGER NOT NULL CHECK(start_cursor>=0),
+      count INTEGER NOT NULL CHECK(count BETWEEN 1 AND 10),
+      PRIMARY KEY(session_id,start_cursor)
+    );
     CREATE TABLE IF NOT EXISTS finished_albums (
       album_id INTEGER PRIMARY KEY REFERENCES albums(id), session_id INTEGER NOT NULL REFERENCES sessions(id)
     );

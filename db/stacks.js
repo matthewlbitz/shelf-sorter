@@ -1,6 +1,6 @@
 // CENTRAL INVARIANT: virtual top-to-bottom order equals physical top-to-bottom order.
 // Scans append (ascending position); column placements push (descending position).
-// Next confirms a physical move; Undo must be accompanied by the inverse physical move.
+// Next confirms the displayed group in sequence; Undo reverses the group in reverse order.
 class WorkflowError extends Error {}
 const fail = message => { throw new WorkflowError(message); };
 function createStore(db) {
@@ -13,13 +13,18 @@ function createStore(db) {
   const top = column => get('SELECT * FROM column_items WHERE column_id=? ORDER BY position DESC LIMIT 1',column);
   function sessionView(s) {
     if (!s) return null;
-    // Preview only: confirmations still move exactly one physical CD per transaction.
+    // This is the next group, taken directly from the durable session order.
     const upcoming = all(`SELECT i.*,a.* FROM session_items i JOIN albums a ON a.id=i.album_id
       WHERE session_id=? AND position>=? ORDER BY position LIMIT 10`,s.id,s.cursor);
     const next = upcoming[0];
     const previous = get(`SELECT i.*,a.* FROM session_items i JOIN albums a ON a.id=i.album_id
       WHERE session_id=? AND position=?`,s.id,s.cursor-1);
-    return { ...s, label: s.kind==='source' ? source(s.source_id).label : String(s.column_id), next, previous, upcoming };
+    const lastAction = get('SELECT * FROM session_actions WHERE session_id=? AND start_cursor+count=?',s.id,s.cursor);
+    // Existing sessions created before group confirmations have one-CD undo history.
+    const undoCount = s.status==='active' ? (lastAction?.count || Math.min(s.cursor,1)) : 0;
+    const undoItems = all(`SELECT i.*,a.* FROM session_items i JOIN albums a ON a.id=i.album_id
+      WHERE session_id=? AND position>=? AND position<? ORDER BY position DESC`,s.id,s.cursor-undoCount,s.cursor);
+    return { ...s, label: s.kind==='source' ? source(s.source_id).label : String(s.column_id), next, previous, upcoming, undoItems };
   }
   function snapshot() {
     return db.transaction(() => ({ revision: revision(), albumCount: get('SELECT count(*) AS n FROM albums').n,
@@ -56,7 +61,8 @@ function createStore(db) {
   function move(sid,undo) {
     const s = latest();
     if (!s || s.id!==sid) fail('Only the most recent sorting session can be changed.');
-    if (undo ? s.cursor===0 : s.status!=='active') fail(undo?'Nothing to undo.':'This session is complete.');
+    if (s.status!=='active') fail('This session is complete.');
+    if (undo && s.cursor===0) fail('Nothing to undo.');
     const index = undo ? s.cursor-1 : s.cursor;
     const item = get(`SELECT i.*,a.destination_column FROM session_items i JOIN albums a ON a.id=i.album_id
       WHERE session_id=? AND position=?`,sid,index);
@@ -85,6 +91,25 @@ function createStore(db) {
     run('UPDATE sessions SET cursor=?,status=? WHERE id=?',cursor,status,sid);
     if (s.kind==='source') run('UPDATE source_stacks SET status=? WHERE id=?',status==='done'?'done':'sorting',s.source_id);
   }
+  function advance(sid,limit) {
+    const s=latest();
+    if (!s || s.id!==sid) fail('Only the most recent sorting session can be changed.');
+    if (s.status!=='active') fail('This session is complete.');
+    const count=Math.min(limit,s.total-s.cursor);
+    run('INSERT INTO session_actions VALUES(?,?,?)',sid,s.cursor,count);
+    // All pushes/pops, the group boundary and progress share the outer transaction.
+    for(let i=0;i<count;i++) move(sid,false);
+  }
+  function undoGroup(sid) {
+    const s=latest();
+    if (!s || s.id!==sid) fail('Only the most recent sorting session can be changed.');
+    if (s.status!=='active') fail('This session is complete.');
+    if (!s.cursor) fail('Nothing to undo.');
+    const lastAction=get('SELECT * FROM session_actions WHERE session_id=? AND start_cursor+count=?',sid,s.cursor);
+    const count=lastAction?.count || 1;
+    for(let i=0;i<count;i++) move(sid,true);
+    if(lastAction) run('DELETE FROM session_actions WHERE session_id=? AND start_cursor=?',sid,lastAction.start_cursor);
+  }
   return { snapshot, action(expected,type,data={}) {
     return mutate(expected,() => {
       if (type==='createSource') {
@@ -106,7 +131,9 @@ function createStore(db) {
         run("UPDATE source_stacks SET status='ready' WHERE id=?",data.id);
       } else if (type==='startSource') startSession('source',data.id);
       else if (type==='startColumn') startSession('column',data.id);
-      else if (type==='next' || type==='undo') move(data.id,type==='undo');
+      else if (type==='nextGroup') advance(data.id,10);
+      else if (type==='next') advance(data.id,1); // Compatibility with existing clients.
+      else if (type==='undo') undoGroup(data.id);
       else fail('Unknown action.');
     });
   }};

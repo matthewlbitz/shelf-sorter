@@ -4,7 +4,7 @@ A small local KTRU utility for moving disorganized CDs through two stages:
 
 **Unsorted shelf → destination column stacks → destination shelf piles.**
 
-Node.js, Express, better-sqlite3, and plain HTML/CSS/JavaScript. No frontend build step. The interface uses KTRU goldenrod and black with Courier New. Both sorting stages preview up to 10 albums without changing the one-CD transaction and Undo semantics.
+Node.js, Express, better-sqlite3, and plain HTML/CSS/JavaScript. No frontend build step. The interface uses KTRU goldenrod and black with Courier New. Both sorting stages show up to 10 albums per group. Next 10 saves the whole group in one transaction; Undo reverses the last group. The layout follows the existing shelf-lookup utility.
 
 ## The invariant
 
@@ -13,10 +13,10 @@ Node.js, Express, better-sqlite3, and plain HTML/CSS/JavaScript. No frontend bui
 - Scan a source stack **top to bottom**. Keep that order while setting CDs aside: append each scanned CD beneath the preceding CDs, or carefully restore the original order before sorting. Do not reverse the stack.
 - During source sorting, take the source's **top CD** and place it **on top** of the indicated destination column.
 - Existing column `A B C` (top to bottom), followed by placements `X`, `Y`, `Z`, becomes **`Z Y X A B C`**.
-- During column sorting, take the column's **top CD** and put it **on top** of its indicated shelf pile. No rescanning is needed. Keep these piles accessible until the session is accepted, so Undo can retrieve the last CD.
-- Press **Moved CD — Next** only after moving that CD. Undo requires returning that same physical CD to the top of the original stack, then confirming the database reversal.
+- During column sorting, take the column's **top CD** and put it **on top** of its indicated shelf pile. No rescanning is needed. Keep these piles accessible while the session is active so Undo can retrieve the last group.
+- Move all CDs shown, in order, then press **Next 10**. For the last group, press **Finish stack**. Undo lists the previous group in reverse order: take each listed CD from the top of its destination pile and put it on top of the original stack, then confirm.
 
-Software cannot detect physical moves. If power/network fails between moving a CD and saving, compare the saved next instruction (including barcode and metadata) with the physical top. Reconcile that single move before continuing. Never blindly repeat Next after an uncertain response.
+Software cannot detect physical moves. If power/network fails between moving a CD and saving, compare the saved group (including barcodes and metadata) with the physical stack. A partially placed group may contain up to 10 unsaved moves. Return those CDs in reverse placement order before resuming the group. Never blindly repeat Next 10 after an uncertain response. Finish and save the current group before pausing; if you cannot, restore its original physical order first.
 
 ## Install and run
 
@@ -56,17 +56,19 @@ The original is opened with SQLite's read-only option. It is never migrated or e
 
 1. Enter a source shelf such as `14C`. Scan with a keyboard-style barcode scanner followed by Enter. Wait for success before scanning the next CD. Unknown and duplicate scans leave the stack unchanged. Input refocuses after each scan.
 2. Choose **Finish Scanning**. The home page lists the saved source as ready.
-3. Choose **Sort into columns**. Read the next 10 albums in top-to-bottom order. The goldenrod highlighted row is the next CD: physically move it to the indicated column's top, then confirm. The list advances by one album. Space or Enter also confirms when focus is outside other controls.
+3. Choose **Sort** on a source stack. Move the displayed group top-to-bottom, putting each CD on its indicated column's top. Then press **Next 10** (or Enter/Space). The final, possibly smaller group uses **Finish stack**.
 4. After completing a source, scan/sort another source or select a populated column. Column stacks accumulate across sources and application restarts.
-5. Choose **Sort into shelves**. Follow the next-10 list in stored column order from top to bottom, moving and confirming each CD individually into the indicated shelf pile. Completion empties that column and marks its albums finished.
+5. Choose a column. Move the displayed group top-to-bottom into the indicated shelf piles, then press **Next 10**. **Finish stack** saves the final group, empties that column, marks its albums finished, and returns to the stack list.
 
 There is **one active sorting session at a time**. Finish or resume it before starting another source/column sort. This intentionally prevents interleaved physical moves from invalidating Undo. Scanning other source stacks remains available. Labels of unfinished sources cannot be reused. Albums cannot be scanned again in another source, including after completion; this prevents a second virtual copy of one physical CD.
 
 ## Recovery and Undo
 
-Scanning, every confirmed move, progress, and Undo live in SQLite, not browser memory. Return home to find unfinished sources and the active sorting session. Browser storage remembers only which screen to display; a new browser can still resume from the database.
+Scanning, every confirmed group, progress, and Undo live in SQLite, not browser memory. Return home to find unfinished sources and the active sorting session. Browser storage remembers only which screen to display; a new browser can still resume from the database.
 
-**Undo Last** reverses progress and the corresponding column push/pop in one transaction. The dialog specifies the physical reverse move. Repeated Undo can step backward through the latest session. Completion does not immediately discard Undo: it remains available until another sorting session starts. Starting a new session closes that prior undo window. No arbitrary cancellation, reordering, or deletion is offered because those would require a separate physical reconciliation workflow.
+**Undo last group** reverses the previous confirmation's progress and all column pushes/pops in one transaction. Its dialog lists the physical moves in reverse order. Return any unsaved moves before undoing a saved group. Group boundaries persist across refresh and restart, including a group smaller than 10. Older sessions created before this feature retain one-CD Undo for their old confirmations.
+
+**Completion is final.** Once the last group is saved, there is no review screen or Undo, and the server rejects further moves or Undo on that session. Completed sources disappear from the active list; a completed column is empty. Completed rows remain in SQLite as history only. No extra confirmation is needed after Finish stack.
 
 Every mutation uses an IMMEDIATE SQLite transaction and checks a global revision. Concurrent/stale tabs and repeated requests using the same revision are rejected before changing anything. The UI disables actions during requests. On an error, current saved state is reloaded; on connection failure, instructions are hidden until recovery. Use one workstation and one operator for physical sorting.
 
@@ -80,6 +82,7 @@ For backups, stop the server cleanly, then copy the application database. Keep b
 - `column_items`: current column contents; **descending autoincrement position** is top-to-bottom. Position is a stable stack-order key, not a dense array index.
 - `sessions`: source/column identity, durable cursor, initial total and completion status. A partial unique index permits only one active session.
 - `session_items`: immutable album sequence for that session plus each column position needed for exact Undo. A source session's cursor separates processed items from the remaining physical source; column sessions pop current membership on each confirmation.
+- `session_actions`: saved group boundaries (start position and count) for durable group Undo. Added automatically to existing application databases without changing their stack contents.
 - `finished_albums`: albums confirmed into final shelf piles.
 - `state`: monotonically increasing revision for optimistic concurrency.
 
@@ -91,7 +94,7 @@ Foreign keys, uniqueness constraints, FULL synchronous writes and transactions p
 npm test
 ```
 
-Tests use isolated temporary or in-memory databases, never the real catalog/workflow database. They cover scan order, source reversal, multiple-source accumulation, the explicit `Z Y X A B C` example, mixed columns, exact Undo including final completion, restart/resume in every phase, final top-to-bottom consumption, empty/duplicate/unknown/stale actions, session exclusion, rollback after a forced database failure, importer immutability/validation and an in-process Express request workflow (including middleware, routes and static HTML).
+Tests use isolated temporary or in-memory databases, never the real catalog/workflow database. They cover scan order, source reversal, multiple-source accumulation, the explicit `Z Y X A B C` example, mixed columns, exact group Undo, final completion lockout, restart/resume in every phase, final top-to-bottom consumption, empty/duplicate/unknown/stale actions, session exclusion, rollback after a forced database failure, importer immutability/validation an in-process Express request workflow (including middleware, routes and static HTML), and client tests for group controls, completion navigation and stale saved screens.
 
 ## GitHub
 
@@ -108,6 +111,6 @@ The create command creates a private repository and pushes the existing local `m
 
 ## Verification on the build machine
 
-All eight automated test groups passed on Node 24.19.0. The real import produced 19,118 albums / 14,567 scannable barcodes; SQLite integrity and foreign-key checks passed. A SHA-256 comparison confirmed the original database remained unchanged.
+All twelve automated test groups passed on Node 24.19.0. The real import produced 19,118 albums / 14,567 scannable barcodes; SQLite integrity and foreign-key checks passed. A SHA-256 comparison confirmed the original database remained unchanged.
 
-Dependencies were installed from locally cached npm archives because outbound registry access was unavailable. This environment also rejected binding a local listening socket (`EPERM`), so live browser/server startup could not be verified here. The Express request tests run without a listening socket. Run `npm start` outside that restriction and try a small known physical stack before production sorting.
+Dependencies were installed from locally cached npm archives because outbound registry access was unavailable. This environment also rejected binding a local listening socket (`EPERM`), so live browser/server startup could not be verified here. The Express request tests run without a listening socket. The local-file browser preview is also blocked by browser URL policy. Client tests exercise the actual rendering and state transitions without a browser, but visual layout has not been verified in a browser here. Run `npm start` outside these restrictions and try a small known physical stack before production sorting.

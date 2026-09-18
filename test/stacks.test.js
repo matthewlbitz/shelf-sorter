@@ -24,18 +24,22 @@ test('scan order, source reversal, persistent second source, exact undo',t=>{
   const first=scan('CBA');
   assert.deepEqual(db.prepare('SELECT album_id FROM source_items ORDER BY position').all().map(x=>x.album_id),[3,2,1]);
   act('startSource',{id:first}); drain(); assert.equal(order(),'ABC');
-  const second=scan('XYZ','15A'); act('startSource',{id:second}); drain();
-  assert.equal(order(),'ZYXABC'); // Explicit physical convention: X, Y, Z each placed ON TOP.
+  const second=scan('XYZ','15A'); act('startSource',{id:second});
   const sid=store.snapshot().session.id;
-  act('undo',{id:sid}); assert.equal(order(),'YXABC'); assert.equal(store.snapshot().session.next.barcode,'Z');
-  act('next',{id:sid}); assert.equal(order(),'ZYXABC');
+  act('next',{id:sid}); act('next',{id:sid});
+  act('undo',{id:sid}); assert.equal(order(),'XABC'); assert.equal(store.snapshot().session.next.barcode,'Y');
+  drain(); assert.equal(order(),'ZYXABC'); // X, Y, Z are each placed ON TOP.
+  const completed=store.snapshot();
+  assert.throws(()=>act('undo',{id:sid}),/complete/);
+  assert.deepEqual(store.snapshot(),completed);
   act('startColumn',{id:17}); const final=store.snapshot().session.id;
   const seen=[];
   while(store.snapshot().session.status==='active') { seen.push(store.snapshot().session.next.barcode); act('next',{id:final}); }
   assert.equal(seen.join(''),'ZYXABC'); assert.equal(order(),'');
   assert.equal(db.prepare('SELECT count(*) n FROM finished_albums').get().n,6);
-  act('undo',{id:final}); assert.equal(order(),'C');
-  act('next',{id:final}); assert.equal(order(),'');
+  const finished=store.snapshot();
+  assert.throws(()=>act('undo',{id:final}),/complete/);
+  assert.deepEqual(store.snapshot(),finished); assert.equal(order(),'');
   assert.throws(()=>act('startSource',{id:first}),/finished, unsorted/);
   assert.throws(()=>act('startColumn',{id:17}),/empty/);
   assert.throws(()=>act('undo',{id:sid}),/most recent/);
@@ -109,4 +113,67 @@ test('ten-album preview follows physical order through moves, undo and resume in
   assert.deepEqual(preview(),['CD2','CD1']);
   assert.equal(store.snapshot().session.upcoming[0].position,10);
   act('next',{id:2});act('next',{id:2});assert.deepEqual(preview(),[]);
+});
+
+test('group boundaries survive restart; Undo reverses mixed-column groups exactly; completion is final',t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'shelf-groups-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'groups.db');
+  let db=openDatabase(file), store=createStore(db);
+  t.after(()=>db.close());
+  const act=(type,data)=>store.action(store.snapshot().revision,type,data);
+  for(let i=1;i<=33;i++) db.prepare('INSERT INTO albums VALUES(?,?,?,?,?,?)').run(i,`CD${i}`,'Artist',`Album ${i}`,i===2?'4B':'17D',i===2?4:17);
+  const scan=(from,to,label)=>{
+    act('createSource',{label});const id=store.snapshot().sources[0].id;
+    for(let i=from;i<=to;i++)act('scan',{id,barcode:`CD${i}`});
+    act('finishScan',{id});act('startSource',{id});
+    return store.snapshot().session.id;
+  };
+  const columns=()=>db.prepare('SELECT * FROM column_items ORDER BY column_id,position DESC').all();
+  const first=scan(1,3,'1A');act('nextGroup',{id:first});const original=columns();
+  assert.equal(store.snapshot().session.cursor,3);
+  const second=scan(4,33,'1B');act('nextGroup',{id:second});
+  assert.equal(store.snapshot().session.cursor,10);
+  assert.deepEqual(store.snapshot().session.undoItems.map(x=>x.barcode),Array.from({length:10},(_,i)=>`CD${13-i}`));
+  db.close();db=openDatabase(file);store=createStore(db);
+  act('undo',{id:second});assert.deepEqual(columns(),original);assert.equal(store.snapshot().session.cursor,0);
+  act('nextGroup',{id:second});act('nextGroup',{id:second});
+  act('undo',{id:second});assert.equal(store.snapshot().session.cursor,10);
+  act('nextGroup',{id:second});act('nextGroup',{id:second});
+  const sourceDone=store.snapshot();assert.throws(()=>act('undo',{id:second}),/complete/);assert.deepEqual(store.snapshot(),sourceDone);
+  const beforeFinal=columns();act('startColumn',{id:17});const final=store.snapshot().session.id;
+  const originalOrder=beforeFinal.filter(x=>x.column_id===17).map(x=>x.album_id);
+  assert.deepEqual(store.snapshot().session.upcoming.map(x=>x.album_id),originalOrder.slice(0,10));
+  act('nextGroup',{id:final});
+  db.close();db=openDatabase(file);store=createStore(db);
+  act('undo',{id:final});assert.deepEqual(columns(),beforeFinal);
+  while(store.snapshot().session.status==='active')act('nextGroup',{id:final});
+  assert.equal(store.snapshot().session.cursor,32);
+  assert.equal(columns().filter(x=>x.column_id===17).length,0);
+  db.close();db=openDatabase(file);store=createStore(db);
+  const finalDone=store.snapshot();assert.throws(()=>act('undo',{id:final}),/complete/);assert.deepEqual(store.snapshot(),finalDone);
+  assert.deepEqual(store.snapshot().session.undoItems,[]);
+});
+
+test('failure halfway through group advance or Undo rolls back every item and group boundary',t=>{
+  const db=openDatabase(':memory:');t.after(()=>db.close());const store=createStore(db);
+  const act=(type,data)=>store.action(store.snapshot().revision,type,data);
+  for(let i=1;i<=12;i++)db.prepare('INSERT INTO albums VALUES(?,?,?,?,?,?)').run(i,`CD${i}`,'Artist','Album',i%2?'17D':'4B',i%2?17:4);
+  act('createSource',{label:'14C'});
+  for(let i=1;i<=12;i++)act('scan',{id:1,barcode:`CD${i}`});
+  act('finishScan',{id:1});act('startSource',{id:1});
+  db.exec("CREATE TRIGGER fail_group BEFORE UPDATE ON sessions WHEN NEW.cursor=5 BEGIN SELECT RAISE(ABORT,'group failure'); END;");
+  const before=store.snapshot();
+  assert.throws(()=>act('nextGroup',{id:1}),/group failure/);
+  assert.deepEqual(store.snapshot(),before);
+  assert.equal(db.prepare('SELECT count(*) n FROM session_actions').get().n,0);
+  assert.equal(db.prepare('SELECT count(*) n FROM column_items').get().n,0);
+  db.exec('DROP TRIGGER fail_group');act('nextGroup',{id:1});
+  assert.equal(store.snapshot().columns.length,2);
+  const moved=store.snapshot(), items=db.prepare('SELECT * FROM column_items ORDER BY position').all();
+  db.exec("CREATE TRIGGER fail_undo BEFORE UPDATE ON sessions WHEN NEW.cursor=5 BEGIN SELECT RAISE(ABORT,'undo failure'); END;");
+  assert.throws(()=>act('undo',{id:1}),/undo failure/);
+  assert.deepEqual(store.snapshot(),moved);assert.deepEqual(db.prepare('SELECT * FROM column_items ORDER BY position').all(),items);
+  db.exec('DROP TRIGGER fail_undo');act('undo',{id:1});
+  assert.equal(store.snapshot().session.cursor,0);assert.deepEqual(store.snapshot().columns,[]);
 });
