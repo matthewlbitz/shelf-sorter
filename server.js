@@ -1,5 +1,10 @@
 const express = require('express');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
+function databaseIdentity(filename) {
+  const resolved = path.resolve(filename);
+  return createHash('sha256').update(process.platform==='win32' ? resolved.toLowerCase() : resolved).digest('hex');
+}
 const { openDatabase } = require('./db/database');
 const { createStore, WorkflowError } = require('./db/stacks');
 function createApp(db) {
@@ -12,6 +17,7 @@ function createApp(db) {
     next();
   });
   app.use(express.json({limit:'8kb'}));
+  app.get('/api/health',(req,res)=>res.json({app:'shelf-sorter',database:databaseIdentity(db.name)}));
   app.get('/api/state',(req,res,next)=>{try{res.json(store.snapshot());}catch(e){next(e);}});
   app.post('/api/action',(req,res,next)=>{
     try {res.json(store.action(req.body.revision,req.body.type,req.body.data));}catch(e){next(e);}
@@ -29,4 +35,4 @@ if(require.main===module) {
   const server=createApp(db).listen(port,'127.0.0.1',()=>console.log(`Shelf Sorter: http://127.0.0.1:${port}`));
   for(const signal of ['SIGINT','SIGTERM']) process.on(signal,()=>server.close(()=>{db.close();process.exit(0);}));
 }
-module.exports={createApp};
+module.exports={createApp,databaseIdentity};

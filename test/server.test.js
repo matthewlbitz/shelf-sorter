@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const http=require('node:http');
 const {Duplex}=require('node:stream');
 const {openDatabase}=require('../db/database');
-const {createApp}=require('../server');
+const {createApp,databaseIdentity}=require('../server');
 // Exercise the real Express middleware/router without binding a network port.
 // This also runs in environments that forbid local listening sockets.
 function request(app,url,body,extraHeaders={}) {
@@ -33,6 +33,9 @@ test('Express workflow, stale requests, static UI and cross-origin rejection',as
   for(let i=1;i<=12;i++) db.prepare('INSERT INTO albums VALUES(?,?,?,?,?,?)').run(i,String(i).padStart(3,'0'),'Artist','Album '+i,'17D',17);
   const app=createApp(db);
   const home=await request(app,'/');assert.equal(home.status,200);assert.match(home.text,/KTRU Shelf Sorter/);
+  const health=(await request(app,'/api/health')).json();
+  assert.equal(health.app,'shelf-sorter');
+  assert.equal(health.database,databaseIdentity(db.name));
   let state=(await request(app,'/api/state')).json();
   async function act(type,data){const res=await request(app,'/api/action',{revision:state.revision,type,data});assert.equal(res.status,200);state=res.json();}
   await act('createSource',{label:'14C'});

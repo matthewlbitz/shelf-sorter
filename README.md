@@ -37,6 +37,26 @@ npm run import -- /absolute/path/to/masterAlbums.db /absolute/path/to/new-shelfS
 
 Import before starting the app. Import refuses to overwrite any existing output, including an empty database created by starting the server before import. Choose a fresh output path and set `SHELF_DB` if that happens. Do not replace an application database containing sorting progress.
 
+## Windows desktop setup
+
+1. Install **Node.js 24 LTS** using the Windows installer from https://nodejs.org/en/download. Keep npm and Add to PATH selected. Open a fresh setup window after installation.
+2. Download the project ZIP (or clone the GitHub repository) and extract it into a permanent local folder. Do not run it from inside the ZIP. Keep the database on the local computer rather than a network share.
+3. For a fresh start, copy `masterAlbums.db` into the project folder, alongside `package.json`. It is only an import source and is excluded from Git.
+4. Double-click **Setup Windows.cmd**. Internet is needed for the initial dependency installation. It runs `npm ci`, imports the catalog if there is no existing application database, and creates a **Shelf Sorter** shortcut on the current user's desktop.
+5. Double-click **Shelf Sorter**. The launcher starts the local server and opens the default browser. Keep the server window open or minimized while sorting. Ctrl+C stops it. Progress survives stopping and restarting.
+
+No hosting service or always-on internet connection is needed after setup. This runs on the Windows computer itself at http://127.0.0.1:3000; it is not shared with other computers. GitHub stores the source code, not the working database.
+
+Clicking the shortcut again opens the running app if it uses this same database. If another app or another copy of Shelf Sorter occupies the port, the launcher reports the conflict. If shortcut creation is blocked by computer policy, double-click `Start Shelf Sorter.cmd` directly; it provides the same launch behavior. No PowerShell execution-policy changes are needed by these scripts.
+
+Keep the project folder in place. If you move it, run Setup Windows.cmd again to update the shortcut. Setup will not reimport or overwrite an existing `data/shelfSorter.db`.
+
+### Bringing existing sorting progress to Windows
+
+Stop the old server cleanly, then copy its **data/shelfSorter.db** into the Windows project's `data` folder before running setup. This carries over the catalog, stacks, and progress. Do not copy `node_modules` from the Mac; setup installs the Windows dependencies. A fresh import from `masterAlbums.db` starts with an empty workflow and does not carry existing sorting progress.
+
+The Windows launcher and shortcut scripts have been syntax-checked here; native Windows launching has not been tested on this Mac. The application tests, including the launcher health endpoint, pass. If setup encounters a native dependency build error, use Node 24 LTS and check the error output; platforms without a prebuilt better-sqlite3 binary require build tools.
+
 ## Source database inspection and import
 
 The supplied database was inspected read-only before the application schema was designed. The complete original schema is recorded in `docs/master-schema.sql`:
