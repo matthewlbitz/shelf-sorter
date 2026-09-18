@@ -1,0 +1,29 @@
+{
+  "name": "shelf-sorter",
+  "version": "1.0.0",
+  "description": "Persistent physical CD stack sorting for KTRU",
+  "main": "server.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "import": "node db/importMasterAlbums.js",
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "private": true,
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "express": "^5.2.1"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.6.2": true
+  }
+}
