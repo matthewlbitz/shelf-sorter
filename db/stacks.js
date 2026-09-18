@@ -13,11 +13,13 @@ function createStore(db) {
   const top = column => get('SELECT * FROM column_items WHERE column_id=? ORDER BY position DESC LIMIT 1',column);
   function sessionView(s) {
     if (!s) return null;
-    const next = get(`SELECT i.*,a.* FROM session_items i JOIN albums a ON a.id=i.album_id
-      WHERE session_id=? AND position=?`,s.id,s.cursor);
+    // Preview only: confirmations still move exactly one physical CD per transaction.
+    const upcoming = all(`SELECT i.*,a.* FROM session_items i JOIN albums a ON a.id=i.album_id
+      WHERE session_id=? AND position>=? ORDER BY position LIMIT 10`,s.id,s.cursor);
+    const next = upcoming[0];
     const previous = get(`SELECT i.*,a.* FROM session_items i JOIN albums a ON a.id=i.album_id
       WHERE session_id=? AND position=?`,s.id,s.cursor-1);
-    return { ...s, label: s.kind==='source' ? source(s.source_id).label : String(s.column_id), next, previous };
+    return { ...s, label: s.kind==='source' ? source(s.source_id).label : String(s.column_id), next, previous, upcoming };
   }
   function snapshot() {
     return db.transaction(() => ({ revision: revision(), albumCount: get('SELECT count(*) AS n FROM albums').n,

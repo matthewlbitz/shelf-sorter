@@ -4,7 +4,7 @@ A small local KTRU utility for moving disorganized CDs through two stages:
 
 **Unsorted shelf → destination column stacks → destination shelf piles.**
 
-Node.js, Express, better-sqlite3, and plain HTML/CSS/JavaScript. No frontend build step.
+Node.js, Express, better-sqlite3, and plain HTML/CSS/JavaScript. No frontend build step. The interface uses KTRU goldenrod and black with Courier New. Both sorting stages preview up to 10 albums without changing the one-CD transaction and Undo semantics.
 
 ## The invariant
 
@@ -56,9 +56,9 @@ The original is opened with SQLite's read-only option. It is never migrated or e
 
 1. Enter a source shelf such as `14C`. Scan with a keyboard-style barcode scanner followed by Enter. Wait for success before scanning the next CD. Unknown and duplicate scans leave the stack unchanged. Input refocuses after each scan.
 2. Choose **Finish Scanning**. The home page lists the saved source as ready.
-3. Choose **Sort into columns**. Read the huge column number, physically move the top CD to that column's top, then confirm. Space or Enter also confirms when focus is outside other controls.
+3. Choose **Sort into columns**. Read the next 10 albums in top-to-bottom order. The goldenrod highlighted row is the next CD: physically move it to the indicated column's top, then confirm. The list advances by one album. Space or Enter also confirms when focus is outside other controls.
 4. After completing a source, scan/sort another source or select a populated column. Column stacks accumulate across sources and application restarts.
-5. Choose **Sort into shelves**. Follow the stored column order from top to bottom, moving each CD to the indicated shelf pile. Completion empties that column and marks its albums finished.
+5. Choose **Sort into shelves**. Follow the next-10 list in stored column order from top to bottom, moving and confirming each CD individually into the indicated shelf pile. Completion empties that column and marks its albums finished.
 
 There is **one active sorting session at a time**. Finish or resume it before starting another source/column sort. This intentionally prevents interleaved physical moves from invalidating Undo. Scanning other source stacks remains available. Labels of unfinished sources cannot be reused. Albums cannot be scanned again in another source, including after completion; this prevents a second virtual copy of one physical CD.
 
@@ -108,6 +108,6 @@ The create command creates a private repository and pushes the existing local `m
 
 ## Verification on the build machine
 
-All seven automated test groups passed on Node 24.19.0. The real import produced 19,118 albums / 14,567 scannable barcodes; SQLite integrity and foreign-key checks passed. A SHA-256 comparison confirmed the original database remained unchanged.
+All eight automated test groups passed on Node 24.19.0. The real import produced 19,118 albums / 14,567 scannable barcodes; SQLite integrity and foreign-key checks passed. A SHA-256 comparison confirmed the original database remained unchanged.
 
 Dependencies were installed from locally cached npm archives because outbound registry access was unavailable. This environment also rejected binding a local listening socket (`EPERM`), so live browser/server startup could not be verified here. The Express request tests run without a listening socket. Run `npm start` outside that restriction and try a small known physical stack before production sorting.

@@ -31,10 +31,18 @@ function render(){
     const done=session.status==='done';
     app.innerHTML=`${button('← Home','home',undefined,true)}<section class="instruction"><h1>SORTING ${session.kind==='source'?esc(session.label):`COLUMN ${session.column_id}`}</h1>
       <p class="progress">${done?session.total:session.cursor+1} / ${session.total}${done?' — Complete':''}</p>
-      ${done?'<h2>All moves saved.</h2>':`<p>PUT ON ${session.kind==='source'?'TOP OF COLUMN':'SHELF PILE'}</p><div class="destination">${session.kind==='source'?session.next.destination_column:esc(session.next.destination_shelf)}</div><p>${esc(session.next.artist)} — ${esc(session.next.title)}</p><p class="muted">Barcode ${esc(session.next.barcode)}</p>`}
-      <p class="notice">${session.kind==='source'?'Take the TOP CD from the source. Place it ON TOP of the shown column stack.':'Take the TOP CD from this column. Place it ON TOP of the shown shelf pile. Keep piles accessible for Undo.'} Confirm only after moving the CD.</p>
-      <div class="actions">${done?'':button('Moved CD — Next','next',session.id)}${session.cursor?button('Undo Last','undo',session.id,true):''}</div>
-      <p class="muted">Space or Enter confirms one move. Undo is available until another sorting session starts.</p></section>`;
+      <div class="actions">${done?'':button('Moved top CD — Next','next',session.id)}${session.cursor?button('Undo Last','undo',session.id,true):''}</div>
+      <p class="notice">${session.kind==='source'?'Place each CD ON TOP of its destination column stack.':'Place each CD ON TOP of its destination shelf pile. Keep piles accessible for Undo.'} Move and confirm one CD at a time, starting with the highlighted row.</p>
+      ${done?'<h2>All moves saved.</h2>':`<h2 class="queue-heading">Next ${session.upcoming.length} albums · top to bottom</h2>
+        <div class="queue-wrap"><table class="queue"><caption class="sr-only">Upcoming albums in physical stack order. The first row is the next CD to move.</caption>
+          <thead><tr><th scope="col">Order</th><th scope="col">Album / barcode</th><th scope="col">Put on ${session.kind==='source'?'column':'shelf'}</th></tr></thead>
+          <tbody>${session.upcoming.map((album,index)=>`<tr ${index===0?'class="current" aria-current="step"':''}>
+            <th scope="row"><span class="sequence">${album.position+1}</span>${index===0?'<small>MOVE NEXT</small>':''}</th>
+            <td><strong>${esc(album.artist)}</strong><span class="album-title">${esc(album.title)}</span><small>Barcode ${esc(album.barcode)}</small></td>
+            <td class="target">${session.kind==='source'?album.destination_column:esc(album.destination_shelf)}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>`}
+      <p class="muted">Space or Enter confirms one move. The list advances one album at a time. Undo restores the previous top CD.</p></section>`;
   }else if(view==='scan' && state.sources.some(s=>s.id===scanId && s.status==='scanning')){
     const s=state.sources.find(s=>s.id===scanId);
     app.innerHTML=`${button('← Home','home',undefined,true)}<section><h1>Scanning ${esc(s.label)}</h1><h2>${s.count} CDs scanned</h2><p class="notice">Scan TOP to BOTTOM. Keep that exact order: put each scanned CD beneath the previous scanned CDs, or rebuild the original order before sorting. Do not reverse the stack.</p><form id="scan"><label for="barcode">Barcode</label><input id="barcode" name="barcode" autocomplete="off" required ${busy?'disabled':''}><button ${busy?'disabled':''}>Scan</button></form><p>${s.last?`Last: ${esc(s.last.artist)} — ${esc(s.last.title)} · Shelf <strong>${esc(s.last.destination_shelf)}</strong>`:'Ready for the first CD.'}</p>${button('Finish Scanning','finishScan',s.id)}</section>`;

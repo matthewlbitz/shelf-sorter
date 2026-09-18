@@ -83,3 +83,30 @@ test('one sorting session at a time; mixed destinations; transactional rollback 
   assert.deepEqual(store.snapshot(),before);
   assert.equal(db.prepare('SELECT count(*) n FROM column_items WHERE column_id=4').get().n,0);
 });
+
+test('ten-album preview follows physical order through moves, undo and resume in both stages',t=>{
+  const db=openDatabase(':memory:');t.after(()=>db.close());
+  const store=createStore(db);
+  const act=(type,data)=>store.action(store.snapshot().revision,type,data);
+  const codes=Array.from({length:12},(_,i)=>`CD${i+1}`);
+  codes.forEach((code,i)=>db.prepare('INSERT INTO albums VALUES(?,?,?,?,?,?)').run(i+1,code,'Artist',code,i%2?'17A':'17D',17));
+  act('createSource',{label:'14C'});
+  codes.forEach(barcode=>act('scan',{id:1,barcode}));
+  act('finishScan',{id:1});act('startSource',{id:1});
+  const preview=()=>store.snapshot().session.upcoming.map(a=>a.barcode);
+  assert.deepEqual(preview(),codes.slice(0,10));
+  act('next',{id:1});assert.deepEqual(preview(),codes.slice(1,11));
+  assert.deepEqual(createStore(db).snapshot().session.upcoming.map(a=>a.barcode),codes.slice(1,11));
+  act('undo',{id:1});assert.deepEqual(preview(),codes.slice(0,10));
+  for(let i=0;i<12;i++)act('next',{id:1});
+  assert.deepEqual(preview(),[]);
+  act('startColumn',{id:17});
+  const reversed=[...codes].reverse();
+  assert.deepEqual(preview(),reversed.slice(0,10));
+  act('next',{id:2});assert.deepEqual(preview(),reversed.slice(1,11));
+  act('undo',{id:2});assert.deepEqual(preview(),reversed.slice(0,10));
+  for(let i=0;i<10;i++)act('next',{id:2});
+  assert.deepEqual(preview(),['CD2','CD1']);
+  assert.equal(store.snapshot().session.upcoming[0].position,10);
+  act('next',{id:2});act('next',{id:2});assert.deepEqual(preview(),[]);
+});
