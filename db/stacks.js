@@ -117,7 +117,12 @@ function createStore(db) {
     return mutate(expected,() => {
       if (type==='createSource') {
         const label = String(data.label || '').trim().toUpperCase();
-        if (!/^(?:[1-9]|[12]\d|3[0-2])[A-Z]+$/.test(label)) fail('Use a shelf label such as 14C (columns 1–32).');
+        const allowedSourceShelf =
+          /^19[A-P]$/.test(label) ||
+          /^(21|22|23)[A-P]$/.test(label);
+
+        if (!allowedSourceShelf)
+          fail('That shelf is not currently available for sorting. Use 19A–19P or 21A–23P.');
         if (get("SELECT id FROM source_stacks WHERE label=? AND status!='done'",label)) fail('This source shelf already has an unfinished stack.');
         run('INSERT INTO source_stacks(label) VALUES(?)',label);
       } else if (type==='scan') {
