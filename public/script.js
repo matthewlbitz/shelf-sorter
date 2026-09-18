@@ -34,7 +34,10 @@ async function action(type, data = {}) {
     if (type === 'createSource') { scanId = state.sources[0].id; view = 'scan'; }
     if (type === 'startSource' || type === 'startColumn') view = 'sort';
     if (type === 'finishScan') { view = 'home'; status = 'Stack ready to sort.'; }
-    if (type === 'scan') status = 'Scanned.';
+    if (type === 'scan') {
+      const last = state.sources.find(source => source.id === data.id).last;
+      status = last.album_id === null ? 'Scanned. Not in catalog; keep it in the stack until sorting.' : 'Scanned.';
+    }
     if (type === 'undo') status = 'Group undone.';
     if (type === 'nextGroup' && state.session.status === 'done') {
       view = 'home';
@@ -54,6 +57,23 @@ async function action(type, data = {}) {
 function button(label, type, id, secondary = false, disabled = false, extra = '') {
   return `<button ${busy || disabled ? 'disabled' : ''} class="${secondary ? 'secondary' : ''} ${extra}" data-action="${type}" ${id === undefined ? '' : `data-id="${id}"`}>${label}</button>`;
 }
+function renderSortRows(session) {
+  const destination = album => album.album_id === null ? null :
+    (session.kind === 'source' ? album.destination_column : album.destination_shelf);
+  return session.upcoming.map((album,index,group) => {
+    const label = destination(album);
+    const previousSame = label != null && index > 0 && destination(group[index-1]) === label;
+    const nextSame = label != null && index+1 < group.length && destination(group[index+1]) === label;
+    const classes = [previousSame || nextSame ? 'batch-repeat' : '',
+      previousSame ? 'repeat-continuation' : '', nextSame ? 'repeat-continues' : '',
+      label == null ? 'set-aside' : ''].filter(Boolean).join(' ');
+    return `<tr class="${classes}">
+      <th scope="row">${album.position + 1}</th>
+      <td class="target">${label == null ? 'Set aside' : esc(label)}</td>
+      <td class="album-detail"><strong>${label == null ? 'Not in catalog' : `${esc(album.artist)} — ${esc(album.title)}`}</strong><small>${esc(album.barcode)}</small></td>
+    </tr>`;
+  }).join('');
+}
 function renderSort(session) {
   const lastGroup = session.cursor + session.upcoming.length === session.total;
   return `<div class="work-head"><div><h1>${session.kind === 'source' ? `Source ${esc(session.label)} → columns` : `Column ${session.column_id} → shelves`}</h1>
@@ -62,12 +82,8 @@ function renderSort(session) {
       <div class="queue-wrap"><table class="queue"><caption class="sr-only">Sort these CDs from top to bottom, in the order shown.</caption>
         <colgroup><col class="order"><col class="destination"><col></colgroup>
         <thead><tr><th scope="col">#</th><th scope="col">${session.kind === 'source' ? 'Column' : 'Shelf'}</th><th scope="col">Album</th></tr></thead>
-        <tbody>${session.upcoming.map((album,index) => `<tr ${index === 0 ? 'class="current"' : ''}>
-          <th scope="row">${album.position + 1}</th>
-          <td class="target">${session.kind === 'source' ? album.destination_column : esc(album.destination_shelf)}</td>
-          <td class="album-detail"><strong>${esc(album.artist)} — ${esc(album.title)}</strong><small>${esc(album.barcode)}</small></td>
-        </tr>`).join('')}</tbody></table></div>
-      <p class="hint">Top to bottom. Place each CD on top of its destination pile.</p>
+        <tbody>${renderSortRows(session)}</tbody></table></div>
+      <p class="hint">Top to bottom. Place each CD on top of its destination pile, including Set aside.</p>
       <div class="actions">${button(lastGroup ? 'Finish stack (Enter)' : 'Next 10 (Enter)','nextGroup',session.id)}${button('Undo last group','undo',session.id,true,!session.undoItems.length)}</div>
       ${lastGroup ? '<p class="hint">Finish after placing these CDs. Completed stacks cannot be undone.</p>' : ''}
       <details><summary>Pausing or undoing</summary><p>Finish placing all CDs shown before pressing Next 10. To pause, save the group first, then go back to stacks. Undo returns the last saved group in reverse order; return any unsaved moves first.</p></details>
@@ -78,16 +94,16 @@ function renderScan(source) {
     <section class="panel work"><div class="scan-layout"><div><form id="scan"><label for="barcode">Barcode</label>
       <input id="barcode" name="barcode" autocomplete="off" required ${busy ? 'disabled' : ''}>
       <div class="actions"><button ${busy ? 'disabled' : ''}>Scan</button>${button('Finish scanning','finishScan',source.id,true,!source.count)}</div></form>
-      <p class="hint">Scan top to bottom. Keep the scanned CDs in that same order.</p>
+      <p class="hint">Scan every CD top to bottom, including unknown barcodes. Keep them in that order.</p>
       <details><summary>Keeping the stack in order</summary><p>Put each scanned CD beneath the ones already scanned. Adding it on top would reverse the stack.</p></details></div>
-      <div class="last-scan"><p class="muted">Last scanned</p>${source.last ? `<h2>${esc(source.last.artist)} — ${esc(source.last.title)}</h2><p class="muted">${esc(source.last.barcode)}</p><p class="target">${esc(source.last.destination_shelf)}</p>` : '<p class="empty">No scans yet.</p>'}</div></div></section>`;
+      <div class="last-scan"><p class="muted">Last scanned</p>${source.last ? `<h2>${source.last.album_id === null ? 'Not in catalog' : `${esc(source.last.artist)} — ${esc(source.last.title)}`}</h2><p class="muted">${esc(source.last.barcode)}</p>${source.last.album_id === null ? '<p class="hint">Keep in the stack. Set aside when sorting.</p>' : `<p class="target">${esc(source.last.destination_shelf)}</p>`}` : '<p class="empty">No scans yet.</p>'}</div></div></section>`;
 }
 function renderHome() {
   const session = state.session?.status === 'active' ? state.session : null;
   const sources = state.sources.filter(source => source.status !== 'done');
   return `${!state.albumCount ? '<p class="error">No catalog loaded. See README for import instructions.</p>' : ''}
     ${session ? `<section class="panel resume"><div><strong>${session.kind === 'source' ? `Source ${esc(session.label)}` : `Column ${session.column_id}`}</strong><small>${session.cursor} of ${session.total} placed</small></div>${button('Resume sorting','sort')}</section>` : ''}
-    <div class="dashboard"><section class="panel"><h2>Scan a shelf</h2><form id="source"><div class="field"><label for="label">Source shelf</label><input id="label" name="label" placeholder="14C" required maxlength="12"></div><button class="full-width" ${busy || !state.albumCount ? 'disabled' : ''}>Start scanning</button></form></section>
+    <div class="dashboard"><section class="panel"><h2>Scan a shelf</h2><form id="source"><div class="field"><label for="label">Source shelf</label><input id="label" name="label" placeholder="e.g. 14C" required maxlength="12"></div><button class="full-width" ${busy || !state.albumCount ? 'disabled' : ''}>Start scanning</button></form></section>
     <div class="dashboard-main"><section class="panel"><div class="panel-head"><h2>Source stacks</h2><span class="muted">${sources.length}</span></div>
     ${sources.map(source => `<div class="row"><div><strong>${esc(source.label)}</strong><small>${source.count} CDs · ${source.status === 'scanning' ? 'Scanning' : source.status === 'ready' ? 'Ready' : 'Sorting'}</small></div>
       ${button(source.status === 'scanning' ? 'Scan' : source.status === 'ready' ? 'Sort' : 'Resume',source.status === 'scanning' ? 'openScan' : source.status === 'ready' ? 'startSource' : 'sort',source.id,true,source.status === 'ready' && !!session)}</div>`).join('') || '<p class="empty">No source stacks.</p>'}</section>
@@ -127,7 +143,7 @@ app.addEventListener('click', event => {
   if (type === 'undo') {
     const session = state.session;
     if (session?.status !== 'active' || !session.undoItems.length) return;
-    const moves = session.undoItems.map((album,index) => `${index+1}. ${album.barcode}: ${session.kind === 'source' ? 'Column '+album.destination_column : 'Shelf '+album.destination_shelf}`).join('\n');
+    const moves = session.undoItems.map((album,index) => `${index+1}. ${album.barcode}: ${album.album_id === null ? 'Set-aside pile' : session.kind === 'source' ? 'Column '+album.destination_column : 'Shelf '+album.destination_shelf}`).join('\n');
     const destination = session.kind === 'source' ? `source ${session.label}` : `Column ${session.column_id}`;
     if (!confirm(`Return any unsaved moves first. Then take these CDs from the tops of their piles, in this order, and place each on top of ${destination}:\n\n${moves}\n\nPress OK after returning all ${session.undoItems.length} CDs.`)) return;
   }

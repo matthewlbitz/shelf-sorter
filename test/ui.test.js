@@ -11,8 +11,9 @@ const {createStore}=require('../db/stacks');
 async function client(store,view='sort') {
   const app={innerHTML:'',addEventListener(){}},feedback={textContent:'',className:''};
   const saved=new Map([['view',view]]);
+  const barcodeInput={value:'',focus(){}};
   const context=vm.createContext({
-    document:{querySelector:selector=>selector==='#app'?app:feedback,addEventListener(){}},
+    document:{querySelector:selector=>selector==='#app'?app:selector==='#barcode'?barcodeInput:feedback,addEventListener(){}},
     sessionStorage:{getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)},
     fetch:async(url,options)=>{
       try {
@@ -24,7 +25,7 @@ async function client(store,view='sort') {
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../public/script.js'),'utf8'),context);
   await new Promise(resolve=>setImmediate(resolve));
-  return {app,feedback,saved,act:(type,id)=>vm.runInContext(`action(${JSON.stringify(type)},{id:${id}})`,context)};
+  return {app,feedback,saved,context,act:(type,id)=>vm.runInContext(`action(${JSON.stringify(type)},${JSON.stringify(typeof id==='object'?id:{id})})`,context)};
 }
 function seed(t,count) {
   const db=openDatabase(':memory:');t.after(()=>db.close());
@@ -59,4 +60,34 @@ test('refresh with a stale sorting screen never reopens a completed stack',async
   const ui=await client(store,'sort');
   assert.equal(ui.saved.get('view'),'home');
   assert.doesNotMatch(ui.app.innerHTML,/Review|Undo|Resume sorting|Finish stack/);
+});
+
+test('source hint is an example; unknown scans are saved and rendered as Set aside',async t=>{
+  const {store}=seed(t,1),ui=await client(store,'home');
+  assert.match(ui.app.innerHTML,/placeholder="e.g. 14C"/);
+  await ui.act('createSource',{label:'2B'});
+  await ui.act('scan',{id:2,barcode:'UNKNOWN<&'});
+  assert.match(ui.feedback.textContent,/keep it in the stack/);
+  assert.match(ui.app.innerHTML,/Set aside when sorting/);
+  assert.match(ui.app.innerHTML,/UNKNOWN&lt;&amp;/);
+  assert.equal(store.snapshot().sources[0].count,1);
+  await ui.act('finishScan',2);
+  // Finish the other active sort, then open the unknown-only source.
+  await ui.act('nextGroup',1);
+  await ui.act('startSource',2);
+  assert.match(ui.app.innerHTML,/>Set aside<\/td>/);
+  assert.match(ui.app.innerHTML,/Not in catalog/);
+  assert.doesNotMatch(ui.app.innerHTML,/null|undefined|class="current"/);
+});
+
+test('highlight only consecutive matching destinations, using columns or exact shelves for the current stage',async t=>{
+  const {store}=seed(t,1),ui=await client(store);
+  const shelves=['4A','10A','10B','10A','4A','4A'];
+  const upcoming=shelves.map((shelf,i)=>({position:i,album_id:i+1,barcode:`CD${i}`,artist:'Artist',title:'Album',destination_column:parseInt(shelf),destination_shelf:shelf}));
+  const classes=kind=>{
+    const html=vm.runInContext(`renderSortRows(${JSON.stringify({kind,upcoming})})`,ui.context);
+    return [...html.matchAll(/<tr class="([^"]*)">/g)].map(match=>match[1]);
+  };
+  assert.deepEqual(classes('source'),['','batch-repeat repeat-continues','batch-repeat repeat-continuation repeat-continues','batch-repeat repeat-continuation','batch-repeat repeat-continues','batch-repeat repeat-continuation']);
+  assert.deepEqual(classes('column'),['','','','','batch-repeat repeat-continues','batch-repeat repeat-continuation']);
 });

@@ -23,8 +23,9 @@ function openDatabase(filename = defaultPath) {
     CREATE UNIQUE INDEX IF NOT EXISTS active_source_label ON source_stacks(label) WHERE status!='done';
     CREATE TABLE IF NOT EXISTS source_items (
       source_id INTEGER NOT NULL REFERENCES source_stacks(id),
-      position INTEGER NOT NULL CHECK(position>=0), album_id INTEGER NOT NULL UNIQUE REFERENCES albums(id),
-      PRIMARY KEY(source_id,position)
+      position INTEGER NOT NULL CHECK(position>=0), album_id INTEGER REFERENCES albums(id),
+      barcode TEXT NOT NULL CHECK(length(barcode)>0),
+      PRIMARY KEY(source_id,position), UNIQUE(source_id,barcode)
     );
     CREATE TABLE IF NOT EXISTS column_items (
       position INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,8 +44,9 @@ function openDatabase(filename = defaultPath) {
     CREATE UNIQUE INDEX IF NOT EXISTS one_active_session ON sessions(status) WHERE status='active';
     CREATE TABLE IF NOT EXISTS session_items (
       session_id INTEGER NOT NULL REFERENCES sessions(id), position INTEGER NOT NULL,
-      album_id INTEGER NOT NULL REFERENCES albums(id), column_position INTEGER,
-      PRIMARY KEY(session_id,position), UNIQUE(session_id,album_id)
+      album_id INTEGER REFERENCES albums(id), column_position INTEGER,
+      barcode TEXT NOT NULL CHECK(length(barcode)>0),
+      PRIMARY KEY(session_id,position), UNIQUE(session_id,barcode)
     );
     CREATE TABLE IF NOT EXISTS session_actions (
       session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -52,10 +54,44 @@ function openDatabase(filename = defaultPath) {
       count INTEGER NOT NULL CHECK(count BETWEEN 1 AND 10),
       PRIMARY KEY(session_id,start_cursor)
     );
-    CREATE TABLE IF NOT EXISTS finished_albums (
-      album_id INTEGER PRIMARY KEY REFERENCES albums(id), session_id INTEGER NOT NULL REFERENCES sessions(id)
-    );
   `);
+  try { migrateScanItems(db); }
+  catch (error) { db.close(); throw error; }
   return db;
+}
+// Upgrade existing workflow databases without changing any stored positions or cursors.
+function migrateScanItems(db) {
+  const oldSources = !db.pragma('table_info(source_items)').some(field => field.name==='barcode');
+  const oldSessions = !db.pragma('table_info(session_items)').some(field => field.name==='barcode');
+  const oldFinished = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='finished_albums'").get();
+  if (!oldSources && !oldSessions && !oldFinished) return;
+  db.transaction(() => {
+    if (oldSources) db.exec(`
+      CREATE TABLE source_items_new (
+        source_id INTEGER NOT NULL REFERENCES source_stacks(id),
+        position INTEGER NOT NULL CHECK(position>=0), album_id INTEGER REFERENCES albums(id),
+        barcode TEXT NOT NULL CHECK(length(barcode)>0),
+        PRIMARY KEY(source_id,position), UNIQUE(source_id,barcode)
+      );
+      INSERT INTO source_items_new SELECT i.source_id,i.position,i.album_id,a.barcode
+        FROM source_items i JOIN albums a ON a.id=i.album_id;
+      DROP TABLE source_items;
+      ALTER TABLE source_items_new RENAME TO source_items;
+    `);
+    if (oldSessions) db.exec(`
+      CREATE TABLE session_items_new (
+        session_id INTEGER NOT NULL REFERENCES sessions(id), position INTEGER NOT NULL,
+        album_id INTEGER REFERENCES albums(id), column_position INTEGER,
+        barcode TEXT NOT NULL CHECK(length(barcode)>0),
+        PRIMARY KEY(session_id,position), UNIQUE(session_id,barcode)
+      );
+      INSERT INTO session_items_new SELECT i.session_id,i.position,i.album_id,i.column_position,a.barcode
+        FROM session_items i JOIN albums a ON a.id=i.album_id;
+      DROP TABLE session_items;
+      ALTER TABLE session_items_new RENAME TO session_items;
+    `);
+    db.exec('DROP TABLE IF EXISTS finished_albums');
+    db.prepare('UPDATE state SET revision=revision+1 WHERE id=1').run();
+  }).immediate();
 }
 module.exports = { openDatabase, defaultPath };

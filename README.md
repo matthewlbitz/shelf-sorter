@@ -48,25 +48,25 @@ The supplied database was inspected read-only before the application schema was 
 - `new_shelf`: empty in the inspected data; **not** used as destination.
 - Other tables include assignment/artist-sort history, cover fingerprints, external barcode/cache tables and older shared/workflow stacks. They are intentionally not imported. The external barcode table contains no entries.
 
-The importer maps `id`, `barcode`, `artist`, `title`, and `new_shelf_label` into the new `albums` table and derives the numeric column. It trims barcodes while preserving leading zeros, validates identifiers and destinations, and rejects duplicate normalized barcodes. Missing barcodes become NULL: these catalog entries remain present but cannot be scanned until a valid assigned barcode is supplied in a future catalog setup. Unknown scans stop with an error; they never create guessed records.
+The importer maps `id`, `barcode`, `artist`, `title`, and `new_shelf_label` into the new `albums` table and derives the numeric column. It trims barcodes while preserving leading zeros, validates identifiers and destinations, and rejects duplicate normalized barcodes. Missing barcodes become NULL: these catalog entries remain present but cannot be scanned until a valid assigned barcode is supplied in a future catalog setup. Unknown barcodes are saved as source-stack items with no album link; they never create guessed catalog records.
 
 The original is opened with SQLite's read-only option. It is never migrated or edited. Existing legacy workflow state is not resumed: begin with physical source stacks whose order can be freshly scanned. `data/shelfSorter.db` is reproducibly generated and ignored by Git.
 
 ## Volunteer workflow
 
-1. Enter a source shelf such as `14C`. Scan with a keyboard-style barcode scanner followed by Enter. Wait for success before scanning the next CD. Unknown and duplicate scans leave the stack unchanged. Input refocuses after each scan.
+1. Enter a source shelf such as `14C`. Scan with a keyboard-style barcode scanner followed by Enter. Unknown barcodes are accepted in their scanned positions; leave those CDs in the stack for now. During source sorting their destination is **Set aside**. Place them on top of a separate set-aside pile, in the displayed sequence. Input refocuses after each scan. Accidental duplicate barcodes within the same source are still rejected.
 2. Choose **Finish Scanning**. The home page lists the saved source as ready.
-3. Choose **Sort** on a source stack. Move the displayed group top-to-bottom, putting each CD on its indicated column's top. Then press **Next 10** (or Enter/Space). The final, possibly smaller group uses **Finish stack**.
+3. Choose **Sort** on a source stack. Move the displayed group top-to-bottom, putting each CD on its indicated column's top. Then press **Next 10** (or Enter/Space). The final, possibly smaller group uses **Finish stack**. Consecutive CDs going to the same column share a highlight; their order stays unchanged. Shelf sorting highlights consecutive matching shelf labels in the same way.
 4. After completing a source, scan/sort another source or select a populated column. Column stacks accumulate across sources and application restarts.
 5. Choose a column. Move the displayed group top-to-bottom into the indicated shelf piles, then press **Next 10**. **Finish stack** saves the final group, empties that column, marks its albums finished, and returns to the stack list.
 
-There is **one active sorting session at a time**. Finish or resume it before starting another source/column sort. This intentionally prevents interleaved physical moves from invalidating Undo. Scanning other source stacks remains available. Labels of unfinished sources cannot be reused. Albums cannot be scanned again in another source, including after completion; this prevents a second virtual copy of one physical CD.
+There is **one active sorting session at a time**. Finish or resume it before starting another source/column sort. This intentionally prevents interleaved physical moves from invalidating Undo. Scanning other source stacks remains available. Labels of unfinished sources cannot be reused. There is no permanent scanned or finished flag on an album. Once a CD leaves the completed workflow, it can be scanned and sorted again. Only current physical membership is protected: a CD still in an unfinished source, a column stack, or an undoable final-sorting group cannot simultaneously enter another source. Past stack history does not prevent rescanning.
 
 ## Recovery and Undo
 
 Scanning, every confirmed group, progress, and Undo live in SQLite, not browser memory. Return home to find unfinished sources and the active sorting session. Browser storage remembers only which screen to display; a new browser can still resume from the database.
 
-**Undo last group** reverses the previous confirmation's progress and all column pushes/pops in one transaction. Its dialog lists the physical moves in reverse order. Return any unsaved moves before undoing a saved group. Group boundaries persist across refresh and restart, including a group smaller than 10. Older sessions created before this feature retain one-CD Undo for their old confirmations.
+**Undo last group** reverses the previous confirmation's progress and all column pushes/pops in one transaction. Its dialog lists the physical moves in reverse order. Return any unsaved moves before undoing a saved group. Group boundaries persist across refresh and restart, including a group smaller than 10. Unknown CDs are included in the reverse-order Undo list: retrieve them from the top of the set-aside pile when instructed. Older sessions created before this feature retain one-CD Undo for their old confirmations.
 
 **Completion is final.** Once the last group is saved, there is no review screen or Undo, and the server rejects further moves or Undo on that session. Completed sources disappear from the active list; a completed column is empty. Completed rows remain in SQLite as history only. No extra confirmation is needed after Finish stack.
 
@@ -74,16 +74,19 @@ Every mutation uses an IMMEDIATE SQLite transaction and checks a global revision
 
 For backups, stop the server cleanly, then copy the application database. Keep backups outside Git. Do not restore an older backup unless physical stacks are also reconciled to that point. Never copy only the main database file while a running instance may have uncheckpointed WAL data.
 
+## Updating an existing shelf-sorter database
+
+Restart the server after updating the code. The application automatically upgrades existing source/session item tables in one SQLite transaction, preserving positions, active cursors, column contents and Undo boundaries. The obsolete `finished_albums` table and global source-album uniqueness restriction are removed. The original `masterAlbums.db` is not involved in this upgrade. No reimport is needed.
+
 ## Database structure
 
 - `albums`: minimal catalog, unique nullable barcode, validated destination and numeric column.
 - `source_stacks`: physical source label and scanning/ready/sorting/done status.
-- `source_items`: permanent scan ledger; ascending position is source top-to-bottom. Album uniqueness prevents duplicate physical membership.
+- `source_items`: each stack's scanned barcode sequence, with an optional album link; ascending position is source top-to-bottom. Barcodes are unique within that source only. Unknowns occupy normal positions.
 - `column_items`: current column contents; **descending autoincrement position** is top-to-bottom. Position is a stable stack-order key, not a dense array index.
 - `sessions`: source/column identity, durable cursor, initial total and completion status. A partial unique index permits only one active session.
 - `session_items`: immutable album sequence for that session plus each column position needed for exact Undo. A source session's cursor separates processed items from the remaining physical source; column sessions pop current membership on each confirmation.
 - `session_actions`: saved group boundaries (start position and count) for durable group Undo. Added automatically to existing application databases without changing their stack contents.
-- `finished_albums`: albums confirmed into final shelf piles.
 - `state`: monotonically increasing revision for optimistic concurrency.
 
 Foreign keys, uniqueness constraints, FULL synchronous writes and transactions protect the state. Source scan history remains after sorting; it is history, not a second current physical stack. Column start snapshots its current top-to-bottom order. All mutation logic is in `db/stacks.js`; API routes are in `server.js` and the interface is in `public/`.
@@ -94,7 +97,7 @@ Foreign keys, uniqueness constraints, FULL synchronous writes and transactions p
 npm test
 ```
 
-Tests use isolated temporary or in-memory databases, never the real catalog/workflow database. They cover scan order, source reversal, multiple-source accumulation, the explicit `Z Y X A B C` example, mixed columns, exact group Undo, final completion lockout, restart/resume in every phase, final top-to-bottom consumption, empty/duplicate/unknown/stale actions, session exclusion, rollback after a forced database failure, importer immutability/validation an in-process Express request workflow (including middleware, routes and static HTML), and client tests for group controls, completion navigation and stale saved screens.
+Tests use isolated temporary or in-memory databases, never the real catalog/workflow database. They cover scan order, source reversal, multiple-source accumulation, the explicit `Z Y X A B C` example, mixed columns, exact group Undo, final completion lockout, restart/resume in every phase, final top-to-bottom consumption, empty/duplicate/unknown/stale actions, session exclusion, rollback after a forced database failure, importer immutability/validation, an in-process Express request workflow (including middleware, routes and static HTML), rescanning after completion, unknown/set-aside items across restart and Undo, legacy schema migration, and client tests for group controls, completion navigation, destination-run highlighting and stale saved screens.
 
 ## GitHub
 
@@ -111,6 +114,6 @@ The create command creates a private repository and pushes the existing local `m
 
 ## Verification on the build machine
 
-All twelve automated test groups passed on Node 24.19.0. The real import produced 19,118 albums / 14,567 scannable barcodes; SQLite integrity and foreign-key checks passed. A SHA-256 comparison confirmed the original database remained unchanged.
+All seventeen automated test groups passed on Node 24.19.0. The real import produced 19,118 albums / 14,567 scannable barcodes; SQLite integrity and foreign-key checks passed. A SHA-256 comparison confirmed the original database remained unchanged.
 
 Dependencies were installed from locally cached npm archives because outbound registry access was unavailable. This environment also rejected binding a local listening socket (`EPERM`), so live browser/server startup could not be verified here. The Express request tests run without a listening socket. The local-file browser preview is also blocked by browser URL policy. Client tests exercise the actual rendering and state transitions without a browser, but visual layout has not been verified in a browser here. Run `npm start` outside these restrictions and try a small known physical stack before production sorting.

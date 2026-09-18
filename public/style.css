@@ -58,8 +58,12 @@ small { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; }
 .queue .destination { width: 150px; }
 .queue tbody th { font-size: 13px; color: var(--muted); font-weight: 400; }
 .queue tr:last-child td, .queue tr:last-child th { border-bottom: 0; }
-.queue .current { background: rgba(218,165,32,.08); }
-.queue .current th { box-shadow: inset 3px 0 var(--accent); }
+.queue .batch-repeat { background: rgba(218,165,32,.09); }
+.queue .batch-repeat th { box-shadow: inset 3px 0 var(--accent); }
+.queue .repeat-continues td, .queue .repeat-continues th { border-bottom-color: transparent; }
+.queue .batch-repeat:not(.repeat-continuation) th { border-top-left-radius: 8px; }
+.queue .batch-repeat:not(.repeat-continues) th { border-bottom-left-radius: 8px; }
+.queue .set-aside .target { font-size: 18px; color: #ffcc66; }
 .queue .target { font-size: 30px; line-height: 1.1; color: var(--accent-strong); font-weight: 700; }
 .album-detail { overflow-wrap: anywhere; font-size: 13px; }
 .album-detail strong { font-weight: 400; color: var(--text); }

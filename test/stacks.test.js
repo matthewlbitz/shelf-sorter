@@ -36,7 +36,7 @@ test('scan order, source reversal, persistent second source, exact undo',t=>{
   const seen=[];
   while(store.snapshot().session.status==='active') { seen.push(store.snapshot().session.next.barcode); act('next',{id:final}); }
   assert.equal(seen.join(''),'ZYXABC'); assert.equal(order(),'');
-  assert.equal(db.prepare('SELECT count(*) n FROM finished_albums').get().n,6);
+  assert.equal(store.snapshot().session.cursor,6);
   const finished=store.snapshot();
   assert.throws(()=>act('undo',{id:final}),/complete/);
   assert.deepEqual(store.snapshot(),finished); assert.equal(order(),'');
@@ -44,14 +44,14 @@ test('scan order, source reversal, persistent second source, exact undo',t=>{
   assert.throws(()=>act('startColumn',{id:17}),/empty/);
   assert.throws(()=>act('undo',{id:sid}),/most recent/);
 });
-test('duplicate, unknown, empty, invalid and stale requests leave state unchanged',t=>{
+test('duplicate, empty, invalid and stale requests leave state unchanged',t=>{
   const {store,act}=setup(t);
   assert.throws(()=>act('createSource',{label:'33A'}),/shelf label/);
   act('createSource',{label:'1A'}); const id=store.snapshot().sources[0].id;
   assert.throws(()=>act('finishScan',{id}),/at least/);
   act('scan',{id,barcode:'A'}); const before=store.snapshot();
   assert.throws(()=>act('scan',{id,barcode:'A'}),/DUPLICATE/);
-  assert.throws(()=>act('scan',{id,barcode:'unknown'}),/UNKNOWN/);
+  assert.throws(()=>act('scan',{id,barcode:'   '}),/empty/);
   assert.throws(()=>store.action(before.revision-1,'scan',{id,barcode:'B'}),/State changed/);
   assert.deepEqual(store.snapshot(),before);
 });
@@ -176,4 +176,58 @@ test('failure halfway through group advance or Undo rolls back every item and gr
   assert.deepEqual(store.snapshot(),moved);assert.deepEqual(db.prepare('SELECT * FROM column_items ORDER BY position').all(),items);
   db.exec('DROP TRIGGER fail_undo');act('undo',{id:1});
   assert.equal(store.snapshot().session.cursor,0);assert.deepEqual(store.snapshot().columns,[]);
+});
+
+test('albums can be sorted repeatedly; only unfinished physical membership blocks another scan',t=>{
+  const {db,store,act,scan,drain}=setup(t);
+  const first=scan('AB');act('startSource',{id:first});drain();
+  act('createSource',{label:'2A'});const second=store.snapshot().sources[0].id;
+  assert.throws(()=>act('scan',{id:second,barcode:'A'}),/unfinished stack/);
+  act('startColumn',{id:17});const columnSession=store.snapshot().session.id;
+  act('next',{id:columnSession});
+  // A CD already put on a final shelf is still undoable until this session finishes.
+  assert.throws(()=>act('scan',{id:second,barcode:'B'}),/unfinished stack/);
+  drain();
+  act('scan',{id:second,barcode:'A'});act('scan',{id:second,barcode:'B'});
+  assert.throws(()=>act('scan',{id:second,barcode:'A'}),/DUPLICATE/);
+  act('finishScan',{id:second});act('startSource',{id:second});drain();
+  act('startColumn',{id:17});drain();
+  assert.equal(store.snapshot().columns.length,0);
+  assert.equal(db.prepare('SELECT count(*) n FROM albums').get().n,7);
+  assert.equal(db.prepare('SELECT count(*) n FROM source_items WHERE album_id=1').get().n,2);
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='finished_albums'").get(),undefined);
+});
+
+test('unknown scans retain their exact position across restart, set-aside moves and group Undo',t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'shelf-unknown-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const filename=path.join(dir,'test.db');let db=openDatabase(filename),store=createStore(db);
+  t.after(()=>db.close());const act=(type,data)=>store.action(store.snapshot().revision,type,data);
+  for(let i=1;i<=9;i++)db.prepare('INSERT INTO albums VALUES(?,?,?,?,?,?)').run(i,`CD${i}`,'Artist','Album','17D',17);
+  const codes=['CD1','UNKNOWN-1','CD2','UNKNOWN-2','CD3','CD4','CD5','CD6','CD7','CD8','CD9'];
+  act('createSource',{label:'14C'});
+  codes.forEach(barcode=>act('scan',{id:1,barcode}));
+  assert.equal(store.snapshot().sources[0].count,11);
+  assert.throws(()=>act('scan',{id:1,barcode:'UNKNOWN-1'}),/DUPLICATE/);
+  assert.equal(db.prepare('SELECT count(*) n FROM albums').get().n,9);
+  db.close();db=openDatabase(filename);store=createStore(db);
+  act('finishScan',{id:1});act('startSource',{id:1});
+  assert.deepEqual(store.snapshot().session.upcoming.map(x=>x.barcode),codes.slice(0,10));
+  assert.equal(store.snapshot().session.upcoming[1].album_id,null);
+  act('nextGroup',{id:1});assert.equal(store.snapshot().session.cursor,10);
+  assert.equal(store.snapshot().columns[0].count,8);
+  assert.deepEqual(store.snapshot().session.undoItems.map(x=>x.barcode),codes.slice(0,10).reverse());
+  db.close();db=openDatabase(filename);store=createStore(db);
+  act('undo',{id:1});assert.deepEqual(store.snapshot().columns,[]);
+  assert.deepEqual(store.snapshot().session.upcoming.map(x=>x.barcode),codes.slice(0,10));
+  act('nextGroup',{id:1});act('nextGroup',{id:1});
+  act('startColumn',{id:17});
+  assert.deepEqual(store.snapshot().session.upcoming.map(x=>x.barcode),Array.from({length:9},(_,i)=>`CD${9-i}`));
+  act('nextGroup',{id:2});assert.deepEqual(store.snapshot().columns,[]);
+  act('createSource',{label:'14D'});act('scan',{id:2,barcode:'UNKNOWN-1'});
+  assert.equal(store.snapshot().sources[0].last.barcode,'UNKNOWN-1');
+  assert.equal(store.snapshot().sources[0].last.album_id,null);
+  act('finishScan',{id:2});act('startSource',{id:2});
+  act('nextGroup',{id:3});assert.equal(store.snapshot().session.status,'done');
+  assert.deepEqual(store.snapshot().columns,[]);
 });
