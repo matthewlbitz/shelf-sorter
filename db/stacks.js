@@ -49,7 +49,7 @@ function createStore(db) {
     let items;
     if (kind==='source') {
       if (source(id).status!=='ready') fail('Only a finished, unsorted source stack can start sorting.');
-      items = all('SELECT album_id,barcode,NULL AS column_position FROM source_items WHERE source_id=? ORDER BY position',id);
+      items = all('SELECT album_id,barcode,NULL AS column_position FROM source_items WHERE source_id=? ORDER BY position DESC',id);
     } else {
       if (!Number.isInteger(id) || id<1 || id>32) fail('Invalid column.');
       items = all('SELECT c.album_id,a.barcode,c.position AS column_position FROM column_items c JOIN albums a ON a.id=c.album_id WHERE column_id=? ORDER BY c.position DESC',id);
