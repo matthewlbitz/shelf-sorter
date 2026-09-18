@@ -1,5 +1,6 @@
 node_modules/
 *.db
+!masterAlbums.db
 *.db-journal
 *.db-wal
 *.db-shm
